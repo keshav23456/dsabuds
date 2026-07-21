@@ -1,0 +1,523 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Platform {
+  LEETCODE
+  CODECHEF
+  CODEFORCES
+  GFG
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum Frequency {
+  VERY_HIGH
+  HIGH
+  OCCASIONAL
+}
+
+enum UserQuestionStatus {
+  UNSOLVED
+  IN_PROGRESS
+  SOLVED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Auth / identity
+  name         String
+  userName     String   @unique
+  email        String   @unique
+  passwordHash String?  // for local auth (if used)
+  salt         String?  // legacy-compatible; can be removed later
+
+  // Profile used by frontend
+  avatarUrl String?
+  college   String?
+  branch    String?
+  socialLinks Json? @default("{}") // e.g. { "linkedin": "...", "github": "...", "twitter": "...", "portfolio": "..." }
+  year      String // graduation year, derived from email's "ugYY" admission-year code
+  role      String? // e.g. "CS - 2024" (can be derived but stored for convenience)
+  branchChangesCount Int @default(0)
+
+  // Leaderboard / gamification
+  points      Int @default(0)
+  overallRank Int?
+
+  // Relations
+  platformConnections PlatformConnection[]
+  dailyActivity       DailyActivity[]
+  questionStatuses    UserQuestion[]
+  forumPosts          ForumPost[]
+  comments            Comment[]
+  votes               Vote[]
+  sheetProgress       UserSheetProblem[]
+  questionBankStatuses UserQuestionBank[]
+
+  // Leaderboard ordering + rank COUNT queries filter/sort on points, often
+  // scoped by branch / year / college.
+  @@index([points])
+  @@index([branch, points])
+  @@index([year, points])
+  @@index([college, points])
+}
+
+model PlatformConnection {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  platform Platform
+  username String
+
+  // Platform-specific stats shown in UI
+  rating         Int?
+  stars          Int?   
+  problemsSolved Int?
+  rankLabel      String? //  "Knight", "Newbie"
+  synced         Boolean @default(false)
+  lastSyncedAt   DateTime?
+  topicBreakdown Json?   @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, platform])
+  @@index([platform])
+}
+
+model DailyActivity {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Store as date (use midnight UTC consistently)
+  date  DateTime
+  count Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([date])
+}
+
+model Company {
+  id String @id @default(cuid())
+
+  name          String @unique
+  slug          String @unique
+  questionCount Int    @default(0)
+  logoUrl       String?
+
+  eligibilityCriteria String? @map("eligibility_criteria")
+  roundsInfo          String? @map("rounds_info")
+  oaPlatform          String? @map("oa_platform")
+  topTopics           String[] @map("top_topics")
+  otherInfo           String? @map("other_info")
+
+  interviewSets  InterviewSet[]
+  companyQuestions CompanyQuestion[]
+  placements     Placement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Placement {
+  id              String   @id @default(cuid())
+  companyId       String?
+  companyRelation Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  companyName     String   @map("company_name")
+  role            String
+  ctcLpa          Float?   @map("ctc_lpa")
+  stipendMonth    Float?   @map("stipend_month")
+  type            String?
+  category        String?
+  eligibleBranches String[] @map("eligible_branches")
+  minCgpa         Float?   @map("min_cgpa")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@map("placements")
+}
+
+model InterviewSet {
+  id String @id @default(cuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name        String
+  tag         String?
+  lastUpdated String? // UI shows "2 days ago" - store raw for now; can be replaced with DateTime later
+
+  easyCount   Int @default(0)
+  easyTotal   Int @default(0)
+  mediumCount Int @default(0)
+  mediumTotal Int @default(0)
+  hardCount   Int @default(0)
+  hardTotal   Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+}
+
+model Question {
+  id String @id @default(cuid())
+
+  // Basic info used in QuestionView + PYQs list
+  title       String
+  displayName String? // e.g. "1. Two Sum"
+  difficulty  Difficulty
+  leetcodeUrl String?
+
+  // Source tracking (for ingestion from multiple platforms)
+  sourcePlatform Platform?
+  sourceId       String? // stable id per platform (e.g. "1234A", "two-sum")
+  sourceSlug     String? // optional human slug (not guaranteed globally unique, e.g. Codeforces problem index)
+  slug           String? @unique // globally unique, URL-safe slug used for routing
+  sourceUrl      String? // canonical URL to open the problem
+  sourceRating   Int?    // e.g. Codeforces rating
+  paidOnly       Boolean?
+
+  // Metadata
+  acceptanceRate Float?
+  frequency      Frequency?
+
+  statement   String?
+  examples    Json?
+  constraints Json?
+
+  acceptedCount   Int?
+  submissionCount Int?
+
+  // Relations
+  tags            String[]
+  companies       CompanyQuestion[]
+  relatedFrom     RelatedQuestion[] @relation("RelatedFrom")
+  relatedTo       RelatedQuestion[] @relation("RelatedTo")
+  userStatuses    UserQuestion[]
+  sheetProblems   SheetProblem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourcePlatform, sourceId])
+  @@index([sourcePlatform])
+  @@index([tags], type: Gin)
+}
+
+model CompanyQuestion {
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  // Company-specific metadata used by PYQs UI
+  frequency Frequency?
+  solved    Boolean? // global "solved" in mock data; real solved is per-user (see UserQuestion)
+  order     Int?
+
+  @@id([companyId, questionId])
+  @@index([questionId])
+}
+
+model RelatedQuestion {
+  fromId String
+  from   Question @relation("RelatedFrom", fields: [fromId], references: [id], onDelete: Cascade)
+
+  toId String
+  to   Question @relation("RelatedTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@id([fromId, toId])
+  @@index([toId])
+}
+
+model UserQuestion {
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  status   UserQuestionStatus @default(UNSOLVED)
+  solvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, questionId])
+  @@index([questionId])
+}
+
+model ForumPost {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  title     String
+  content   String
+  tags      String[] // PostgreSQL string array
+
+  // Relations
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comments  Comment[]
+  votes     Vote[]
+
+  @@index([userId])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content   String
+
+  // Relations
+  postId    String
+  post      ForumPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Threading relations
+  parentId  String?
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
+
+  @@index([postId])
+  @@index([userId])
+  @@index([parentId])
+}
+
+model Vote {
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId    String
+  post      ForumPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  value     Int       // 1 for upvote, -1 for downvote
+
+  @@id([userId, postId])
+  @@index([postId])
+}
+
+model ContactSubmission {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  name      String
+  email     String
+  message   String
+
+  @@index([createdAt])
+  @@map("contact_submissions")
+}
+
+model College {
+  id String @id @default(cuid())
+
+  name   String
+  domain String @unique // e.g. "nsut.ac.in"
+
+  branches Branch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Branch {
+  id String @id @default(cuid())
+
+  name String
+  code String
+
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([collegeId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Practice Sheets (e.g. Striver A2Z). Generic so any number of sheets can be
+// added and tracked per-user. A Sheet has nested Sections (self-referential
+// parent/child) and Problems; users track status / notes / revision per problem.
+// ---------------------------------------------------------------------------
+
+model Sheet {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        String
+  description String?
+  author      String? // e.g. "Striver"
+  sourceUrl   String? // canonical link to the original sheet
+  coverImage  String?
+  order       Int     @default(0)
+  isPublished Boolean @default(true)
+
+  // Denormalized count for quick listing (kept in sync by seed/admin ops)
+  totalProblems Int @default(0)
+
+  sections SheetSection[]
+  problems SheetProblem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SheetSection {
+  id      String @id @default(cuid())
+  sheetId String
+  sheet   Sheet  @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+
+  title String
+  order Int    @default(0)
+
+  // Self-referential for subsections (e.g. Arrays > Easy / Medium / Hard)
+  parentId String?
+  parent   SheetSection?  @relation("SectionChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children SheetSection[] @relation("SectionChildren")
+
+  problems SheetProblem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sheetId])
+  @@index([parentId])
+}
+
+model SheetProblem {
+  id        String @id @default(cuid())
+  sheetId   String
+  sheet     Sheet  @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  sectionId String
+  section   SheetSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  title      String
+  order      Int         @default(0)
+  difficulty Difficulty?
+
+  // Resource columns shown in the sheet UI
+  articleUrl   String?
+  youtubeUrl   String?
+  practiceUrl  String? // LeetCode / GFG practice link
+  plusUrl      String? // premium / "plus" resource
+  editorialUrl String?
+
+  // Optional link to a Question in our DB (opens in QuestionView)
+  questionId String?
+  question   Question? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  userProgress UserSheetProblem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sheetId])
+  @@index([sectionId])
+  @@index([questionId])
+}
+
+model UserSheetProblem {
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sheetProblemId String
+  sheetProblem   SheetProblem @relation(fields: [sheetProblemId], references: [id], onDelete: Cascade)
+
+  status   UserQuestionStatus @default(UNSOLVED)
+  starred  Boolean            @default(false) // "Revision" column
+  note     String?
+  solvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, sheetProblemId])
+  @@index([sheetProblemId])
+}
+
+// ---------------------------------------------------------------------------
+// General Questions Bank (the public /questions page). Deliberately NOT
+// linked to Company/CompanyQuestion so it can be reseeded independently of
+// company PYQ data. Sourced from LeetCode and Codeforces (see
+// backend/scripts/seedQuestionBank.js).
+// ---------------------------------------------------------------------------
+
+model QuestionBank {
+  id String @id @default(cuid())
+
+  title       String
+  displayName String?
+  difficulty  Difficulty
+  leetcodeUrl String?
+
+  sourcePlatform Platform
+  sourceId       String
+  sourceSlug     String?
+  slug           String? @unique
+  sourceUrl      String?
+  sourceRating   Int?
+  paidOnly       Boolean?
+
+  acceptanceRate Float?
+  frequency      Frequency?
+
+  statement   String?
+  examples    Json?
+  constraints Json?
+
+  acceptedCount   Int?
+  submissionCount Int?
+
+  tags String[]
+
+  userStatuses UserQuestionBank[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourcePlatform, sourceId])
+  @@index([sourcePlatform])
+  @@index([tags], type: Gin)
+}
+
+model UserQuestionBank {
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionId String
+  question   QuestionBank @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  status   UserQuestionStatus @default(UNSOLVED)
+  solvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, questionId])
+  @@index([questionId])
+}
